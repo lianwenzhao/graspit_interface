@@ -647,29 +647,44 @@ void GraspitInterface::runPlannerInMainThread()
     mHandObjectState = new GraspPlanningState(mHand);
     mHandObjectState->setObject(mObject);
 
+    std::map<QString, std::pair<double, bool> > dof_values;
+    dof_values.insert(std::make_pair("EG 0", std::make_pair(10, true)));
+    mHandObjectState->getPosture()->setVariables(dof_values);
+
+    std::map<QString, std::pair<double, bool> > pos_values;
+    pos_values.insert(std::make_pair("Tx", std::make_pair(0, false)));
+    pos_values.insert(std::make_pair("Ty", std::make_pair(0, true)));
+    mHandObjectState->getPosition()->setVariables(pos_values);
+
+    ROS_INFO("!!! before opt, first is %g, fixed? %d, Tx is %g,fixed? %d !!!",
+             mHandObjectState->getVariable(0)->getValue(),
+             mHandObjectState->getVariable(0)->isFixed(),
+             mHandObjectState->getVariable(1)->getValue(),
+             mHandObjectState->getVariable(1)->isFixed());
+
     switch(goal.search_space.type) {
         case graspit_interface::SearchSpace::SPACE_COMPLETE :
             {
-                mHandObjectState->setPositionType(SPACE_COMPLETE);
-                mHandObjectState->setRefTran( mObject->getTran() );
+                mHandObjectState->setPositionType(SPACE_COMPLETE, true);
+                mHandObjectState->setRefTran( mObject->getTran(), true);
                 break;
             }
         case graspit_interface::SearchSpace::SPACE_AXIS_ANGLE :
             {
-                mHandObjectState->setPositionType(SPACE_AXIS_ANGLE);
-                mHandObjectState->setRefTran( mObject->getTran() );
+                mHandObjectState->setPositionType(SPACE_AXIS_ANGLE, true);
+                mHandObjectState->setRefTran( mObject->getTran() ,true);
                 break;
             }
         case graspit_interface::SearchSpace::SPACE_ELLIPSOID :
             {
-                mHandObjectState->setPositionType(SPACE_ELLIPSOID);
-                mHandObjectState->setRefTran( mObject->getTran() );
+                mHandObjectState->setPositionType(SPACE_ELLIPSOID, true);
+                mHandObjectState->setRefTran( mObject->getTran() ,true);
                 break;
             }
         case graspit_interface::SearchSpace::SPACE_APPROACH :
             {
-                mHandObjectState->setPositionType(SPACE_APPROACH);
-                mHandObjectState->setRefTran( mHand->getTran() );
+                mHandObjectState->setPositionType(SPACE_APPROACH, true);
+                mHandObjectState->setRefTran( mHand->getTran() ,true);
                 break;
             }
         default:
@@ -679,8 +694,14 @@ void GraspitInterface::runPlannerInMainThread()
             }
     }
 
-    ROS_INFO("Initing mHandObjectState");
-    mHandObjectState->reset();
+    ROS_INFO("!!! after search space, first is %g, fixed? %d, Tx is %g,fixed? %d !!!",
+             mHandObjectState->getVariable(0)->getValue(),
+             mHandObjectState->getVariable(0)->isFixed(),
+             mHandObjectState->getVariable(1)->getValue(),
+             mHandObjectState->getVariable(1)->isFixed());
+    ROS_INFO("Initing mHandObjectState as user defined.");
+    //ROS_INFO("Initing mHandObjectState");
+    //mHandObjectState->reset();
 
     ROS_INFO("Initing mPlanner");
 
@@ -764,6 +785,12 @@ void GraspitInterface::runPlannerInMainThread()
 
     ROS_INFO("Setting Planner Model State");
     mPlanner->setModelState(mHandObjectState);
+    ROS_INFO("!!! After set, dof is %g , fixed %d, Tx is %g, fixed %d !!!",
+    mPlanner->getCurrentGPS()->getVariable(0)->getValue(),
+    mPlanner->getCurrentGPS()->getVariable(0)->isFixed(),
+    mPlanner->getCurrentGPS()->getVariable(1)->getValue(),
+    mPlanner->getCurrentGPS()->getVariable(1)->isFixed());
+
     int max_steps = goal.max_steps;
     if(max_steps ==0)
     {
@@ -774,6 +801,12 @@ void GraspitInterface::runPlannerInMainThread()
 
     ROS_INFO("resetting Planner");
     mPlanner->resetPlanner();
+
+    ROS_INFO("!!! After reset, dof is %g , fixed %d, Tx is %g, fixed %d !!!",
+    mPlanner->getCurrentGPS()->getVariable(0)->getValue(),
+    mPlanner->getCurrentGPS()->getVariable(0)->isFixed(),
+    mPlanner->getCurrentGPS()->getVariable(1)->getValue(),
+    mPlanner->getCurrentGPS()->getVariable(1)->isFixed());
 
     ROS_INFO("Starting Planner");
     mPlanner->startPlanner();
@@ -801,8 +834,22 @@ void GraspitInterface::runPlannerInMainThread()
     {
         ROS_INFO("Loading Grasp");
         const GraspPlanningState *gps  = mPlanner->getGrasp(i);
-        gps->execute(mHand);
-        mHand->autoGrasp(false,1.0,false);
+	ROS_INFO("!!!Stored grasp is %d fixed %d dof %g fixed %d Tx %g!!!", gps->getNumVariables(),
+	gps->getVariable(0)->isFixed(), gps->getVariable(0)->getValue(),
+	gps->getVariable(1)->isFixed(), gps->getVariable(1)->getValue());
+        if (!gps->execute(mHand)){
+	    ROS_WARN("Failure happens when executing the planned grasp!");
+	}
+
+	transf t_tmp = mHand->getTran();
+	ROS_INFO("!!!Stored grasp has Tx %g Ty %g Tz%g!!!",
+	t_tmp.translation().x()/1000.0,
+	t_tmp.translation().y()/1000.0,
+	t_tmp.translation().z()/1000.0);
+
+	double dd[mHand->getNumDOF()];
+	mHand->getDOFVals(dd);
+	ROS_INFO("!!!before autograsp hand dof %d is %g!!!", mHand->getNumDOF(), dd[0]);
 
         ROS_INFO("Building Pose");
         geometry_msgs::Pose pose;
@@ -818,14 +865,23 @@ void GraspitInterface::runPlannerInMainThread()
         graspit_interface::Grasp g;
         g.graspable_body_id = goal.graspable_body_id;
 
+	mHand->getDOFVals(dd);
+	ROS_INFO("!!!after autograsp hand dof %d is %g!!!", mHand->getNumDOF(), dd[0]);
         double dof[mHand->getNumDOF()];
         mHand->getDOFVals(dof);
-        for(int i = 0; i <mHand->getNumDOF(); ++i)
+        for(int j = 0; j <mHand->getNumDOF(); ++j)
         {
-            g.dofs.push_back(dof[i]);
+            g.dofs.push_back(dof[j]);
         }
 
         g.pose = pose;
+
+        ROS_INFO("grasp %d has dof %g and pose %g %g %g %g %g %g %g!!!",
+	         i, g.dofs[0], g.pose.position.x, g.pose.position.y, g.pose.position.z,
+		 g.pose.orientation.w, g.pose.orientation.x,
+		 g.pose.orientation.y, g.pose.orientation.z);
+
+        mHand->autoGrasp(false,1.0,false);
         mHand->getGrasp()->update();
         QualVolume mVolQual( mHand->getGrasp(), ("Volume"),"L1 Norm");
         QualEpsilon mEpsQual( mHand->getGrasp(), ("Epsilon"),"L1 Norm");
@@ -840,6 +896,7 @@ void GraspitInterface::runPlannerInMainThread()
         result_.grasps.push_back(g);
         result_.energies.push_back(gps->getEnergy());
         result_.search_energy = goal.search_energy;
+	ROS_INFO("Grasp energy is %g", gps->getEnergy());
     }
 
     ROS_INFO("Showing Grasp 0");
